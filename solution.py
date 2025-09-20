@@ -110,7 +110,7 @@ class SpaceRestorer:
         
         Включает:
         - Действия пользователей (куплю, продам, сдаю...)
-        - Популярные бренды техники
+        - Популярные бренды
         - Недвижимость и транспорт
         - Предлоги и служебные слова
         - Числа и измерения
@@ -121,7 +121,7 @@ class SpaceRestorer:
             'ищу': 70000, 'отдам': 40000, 'обменяю': 35000, 'меняю': 30000,
             'покупаю': 25000, 'продаю': 20000, 'сдам': 30000, 'сниму': 25000,
             
-            # Популярные бренды техники
+            # Популярные бренды
             'айфон': 45000, 'iphone': 40000, 'samsung': 30000, 'xiaomi': 25000,
             'huawei': 20000, 'nokia': 15000, 'lg': 18000, 'sony': 16000,
             'macbook': 20000, 'asus': 15000, 'lenovo': 12000, 'hp': 10000,
@@ -276,6 +276,52 @@ class SpaceRestorer:
         
         return 0.0
     
+    def _get_context_bonus(self, text: str, start: int, end: int) -> float:
+        """
+        Дает бонус в зависимости от контекста слова
+        
+        Args:
+            text: Полный текст
+            start: Начало слова
+            end: Конец слова
+            
+        Returns:
+            Контекстный бонус
+        """
+        word = text[start:end].lower()
+        bonus = 0.0
+        
+        # Бонус за соседство с известными словами
+        if start > 0:
+            # Проверяем предыдущий символ
+            prev_char = text[start-1]
+            if prev_char.isalpha():
+                # Если предыдущий символ - буква, возможно плохое разбиение
+                bonus -= 2.0
+        
+        if end < len(text):
+            # Проверяем следующий символ
+            next_char = text[end]
+            if next_char.isalpha():
+                # Проверяем, может ли следующая часть быть хорошим словом
+                next_part = text[end:min(end+8, len(text))]
+                if any(next_part[:i].lower() in self.word_freq for i in range(2, len(next_part)+1)):
+                    bonus += 1.0
+        
+        # Бонус за позицию в тексте (начало/конец текста)
+        if start == 0:
+            bonus += 0.5  # Небольшой бонус за начало текста
+        if end == len(text):
+            bonus += 0.5  # Небольшой бонус за конец текста
+            
+        # Бонус за сочетания с числами
+        if word.isdigit() and end < len(text):
+            next_part = text[end:min(end+5, len(text))]
+            if any(next_part.startswith(unit) for unit in ['руб', 'тыс', 'млн', 'км', 'м', 'кв']):
+                bonus += 3.0
+        
+        return bonus
+    
     def get_word_score(self, word: str) -> float:
         """
         Вычисляет оценку качества слова для алгоритма сегментации
@@ -399,21 +445,25 @@ class SpaceRestorer:
                     
                     # КРИТИЧНО: Массивные бонусы за длинные известные слова
                     if word_len >= 7:
-                        length_bonus = 25.0 + (word_len - 7) * 3.0  # 25+ баллов за слова 7+ символов
+                        length_bonus = 30.0 + (word_len - 7) * 4.0  # Увеличиваем бонус за длинные слова
                     elif word_len == 6:
-                        length_bonus = 20.0  # 20 баллов за 6-символьные слова
+                        length_bonus = 22.0  # Больше бонуса за 6-символьные
                     elif word_len == 5:
-                        length_bonus = 15.0  # 15 баллов за 5-символьные слова
+                        length_bonus = 16.0  # Больше бонуса за 5-символьные
                     elif word_len == 4:
-                        length_bonus = 10.0  # 10 баллов за 4-символьные слова
+                        length_bonus = 12.0  # Больше бонуса за 4-символьные
                     elif word_len == 3:
-                        length_bonus = 5.0   # 5 баллов за 3-символьные слова
+                        length_bonus = 6.0   # Больше бонуса за 3-символьные
                     elif word_len == 2:
-                        length_bonus = 0.0   # 0 баллов за 2-символьные слова
+                        length_bonus = -5.0  # Небольшой штраф за 2-символьные
                     else:  # word_len == 1
-                        length_bonus = -30.0  # ОГРОМНЫЙ штраф за одиночные символы
+                        length_bonus = -35.0  # Еще больший штраф за одиночные символы
                     
                     word_score = base_score + length_bonus
+                    
+                    # НОВОЕ: Контекстные бонусы для известных слов
+                    context_bonus = self._get_context_bonus(text, start, i)
+                    word_score += context_bonus
                     
                 elif word_len >= 3 and self.looks_like_russian_word(word):
                     # Неизвестное, но правдоподобное слово
@@ -458,7 +508,7 @@ class SpaceRestorer:
                 dp[i] = best_score
                 parent[i] = best_start
             else:
-                # Fallback: одиночный символ с огромным штрафом
+                # Худший вариант:одиночный символ с огромным штрафом
                 dp[i] = dp[i-1] - 40.0
                 parent[i] = i - 1
         
@@ -547,7 +597,7 @@ class SpaceRestorer:
 
     def combine_methods(self, text: str) -> List[int]:
         """
-        Упрощенная комбинация методов с fallback на жадный алгоритм
+        Упрощенная комбинация методов с фолбэком на жадный алгоритм
         
         Args:
             text: Входной текст без пробелов
@@ -571,8 +621,17 @@ class SpaceRestorer:
         
         bad_ratio = bad_words / len(words) if words else 0
         
+        # Адаптивный порог в зависимости от длины текста
+        text_len = len(text)
+        if text_len < 20:
+            threshold = 0.1  # Строже для коротких текстов
+        elif text_len < 50:
+            threshold = 0.15  # Средне для средних текстов
+        else:
+            threshold = 0.2   # Мягче для длинных текстов
+        
         # Если слишком много плохих слов, используем жадный алгоритм
-        if bad_ratio > 0.3:  # Больше 30% плохих слов
+        if bad_ratio > threshold:
             greedy_positions = self.greedy_segmentation(text)
             
             # Сравниваем результаты и выбираем лучший
@@ -582,7 +641,8 @@ class SpaceRestorer:
                               (len(w) > 15 and w.lower() not in self.word_freq))
             greedy_bad_ratio = greedy_bad / len(greedy_words) if greedy_words else 1
             
-            if greedy_bad_ratio < bad_ratio:
+            # Выбираем лучший результат с дополнительными критериями
+            if greedy_bad_ratio < bad_ratio - 0.05:  # Требуем значительного улучшения
                 dp_positions = greedy_positions
         
         # Простая фильтрация
@@ -592,7 +652,7 @@ class SpaceRestorer:
     
     def _filter_positions_simple(self, text: str, positions: List[int]) -> List[int]:
         """
-        Упрощенная фильтрация позиций
+        Улучшенная фильтрация позиций с интеллектуальными правилами
         """
         if not positions:
             return positions
@@ -607,8 +667,34 @@ class SpaceRestorer:
             # Убираем позиции слишком близко друг к другу
             if filtered and pos - filtered[-1] <= 1:
                 continue
+                
+            # НОВОЕ: Проверяем контекст вокруг позиции
+            should_add = True
             
-            filtered.append(pos)
+            # Не разбиваем числа
+            if pos > 0 and pos < len(text):
+                left_char = text[pos-1]
+                right_char = text[pos]
+                if left_char.isdigit() and right_char.isdigit():
+                    should_add = False
+            
+            # Не разбиваем после однобуквенных слов, если следующее слово короткое
+            if filtered and pos - filtered[-1] == 2:  # Если предыдущее слово из 1 буквы
+                if pos + 1 < len(text) and not text[pos+1:pos+3].lower() in self.word_freq:
+                    should_add = False
+            
+            # Проверяем, что разбиение создает осмысленные части
+            if should_add and pos > 1 and pos < len(text) - 1:
+                left_part = text[max(0, pos-6):pos]
+                right_part = text[pos:min(len(text), pos+6)]
+                
+                # Если обе части выглядят как мусор, пропускаем
+                if (not any(left_part[-i:].lower() in self.word_freq for i in range(1, min(6, len(left_part))+1)) and
+                    not any(right_part[:i].lower() in self.word_freq for i in range(1, min(6, len(right_part))+1))):
+                    should_add = False
+            
+            if should_add:
+                filtered.append(pos)
         
         return filtered
         
@@ -642,11 +728,10 @@ class SpaceRestorer:
         
         return positions
     
+    ''' Convenience метод для получения текста с восстановленными пробелами, нужен для отладки
     def restore_spaces(self, text: str) -> str:
         """
         Восстанавливает пробелы в тексте
-        
-        Convenience метод для получения текста с восстановленными пробелами.
         
         Args:
             text: Входной текст без пробелов
@@ -667,9 +752,10 @@ class SpaceRestorer:
         result += text[prev:]
         
         return result
+    '''
 
 
-def load_dataset(filename: str = "dataset_1937770_3.txt") -> pd.DataFrame:
+def load_dataset(filename: str = "filename.txt") -> pd.DataFrame:
     """
     Загружает датасет для обработки, правильно обрабатывая запятые в тексте
     
@@ -698,7 +784,7 @@ def load_dataset(filename: str = "dataset_1937770_3.txt") -> pd.DataFrame:
                 
                 # Заменяем дополнительные запятые и другие знаки препинания пробелами в тексте
                 import string
-                # Создаем таблицу замены: все знаки препинания кроме букв, цифр и дефисов заменяем пробелами
+                # Создаем таблицу замены: все знаки препинания кроме букв и цифр заменяем пробелами
                 punctuation_chars = ',;:!?"\'()[]{}«»„"-—–.…'
                 spaces = ' ' * len(punctuation_chars)  # Создаем строку пробелов той же длины
                 translator = str.maketrans(punctuation_chars, spaces)
@@ -726,10 +812,10 @@ def process_dataset(df: pd.DataFrame, restorer: SpaceRestorer) -> pd.DataFrame:
     
     Args:
         df: Датасет с текстами
-        restorer: Инициализированный восстановитель пробелов
+        restorer: Восстановитель пробелов (инициализирован)
         
     Returns:
-        pd.DataFrame: Датасет с добавленной колонкой predicted_positions
+        pd.DataFrame: Датасет с колонкой predicted_positions
     """
     
     # Создаем копию датасета
